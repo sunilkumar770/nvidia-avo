@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "nvidia-avo"
+version = "1.2.0"
+description = "NVIDIA AVO (Autonomous Validation Orchestrator) Engine & Plugin Kit for Antigravity, Claude Code & Frontier LLMs"
+readme = "README.md"
+requires-python = ">=3.8"
+license = "MIT"
+authors = [{ name = "Sunil Kumar", email = "sunilkumar770@github.com" }]
+keywords = ["antigravity", "claude-code", "nvidia-avo", "agentic-ai", "memory", "validation"]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Topic :: Software Development :: Build Tools",
+]
+
+[project.urls]
+Homepage = "https://github.com/sunilkumar770/nvidia-avo"
+Repository = "https://github.com/sunilkumar770/nvidia-avo.git"
+
+[project.scripts]
+avo = "avo:main"
+
+[tool.setuptools]
+py-modules = ["avo"]
