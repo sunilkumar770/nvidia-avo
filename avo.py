@@ -2,6 +2,7 @@
 """
 NVIDIA AVO (Autonomous Validation Orchestrator) Engine & Plugin Kit
 Works with Antigravity, Claude Code, Cursor, Windsurf & Gemini CLI.
+Supports Hybrid AVO + DSH (DeepSeek Harness) Pipeline Execution Mode.
 Standard-library only, zero external model downloads required.
 """
 import argparse
@@ -13,7 +14,7 @@ import sys
 import time
 from pathlib import Path
 
-VERSION = "1.2.0"
+VERSION = "1.3.0"
 MEM_FILE = ".agent_memory.json"
 STAGNATION_THRESHOLD = 3
 MAX_ATTEMPTS = 500
@@ -26,7 +27,7 @@ FAIL_SIGNALS = (
 
 AGENTS_MD_TEMPLATE = """# AVO Mode — Global Long-Horizon Agent Rules
 
-This workspace runs in AVO mode (persistent memory + execution grounding + supervisor pivot), modeled on NVIDIA's Agentic Variation Operators research. These rules apply to EVERY task, whether a quick chat question or a long mission.
+This workspace runs in AVO mode (persistent memory + execution grounding + supervisor pivot), modeled on NVIDIA's Agentic Variation Operators research and DeepSeek Harness (DSH) hybrid architecture.
 
 ## 1. Memory First
 - Before any non-trivial task, run: `python .avo/avo.py summary` (or `python avo.py summary`)
@@ -34,7 +35,7 @@ This workspace runs in AVO mode (persistent memory + execution grounding + super
 - Store durable environment facts with: `python .avo/avo.py fact "..."`
 
 ## 2. Execution Grounding
-- Every code change MUST be validated by real execution (tests, build, lint, or a runtime probe) via the terminal.
+- Every code change MUST be validated by real execution (tests, build, lint, or a runtime probe) via the terminal or `dsh` runtime.
 - NEVER report a task complete without passing terminal output captured in THIS session. "It should work" is not a completion state.
 
 ## 3. Persistent Logging
@@ -45,37 +46,28 @@ This workspace runs in AVO mode (persistent memory + execution grounding + super
 - Every 3 actions, and after every failure, run: `python .avo/avo.py check`
 - On STAGNATION (same failure fingerprint 3x): STOP the current strategy. Do not tweak-and-retry. Delegate a stagnation review to the `avo_supervisor` agent; otherwise perform an explicit self-review of the memory log. Resume only with a materially different root-cause hypothesis.
 
-## 5. Supervisor
-- `avo_supervisor` is a read-only oversight agent (where the platform supports subagents). Call it on stagnation, before finalizing tasks longer than ~5 actions, and for edge-case / regression review. Act on its verdict.
-
-## 6. Efficiency
-- Consult memory before re-running expensive commands or re-reading large files.
-- Minimal diffs that test one hypothesis at a time.
-- Iterate until validation passes or a supervisor-approved stop condition.
-
-## 7. Model Selection
-- Use `avo_worker` as your main agent for long-horizon tasks.
-- Use `avo_supervisor` for stagnation reviews and pre-completion audits.
-- For hard tasks, switch the worker model to Claude Opus 4.8 / Claude Sonnet / GPT-4o or keep Gemini Flash for speed.
+## 5. Supervisor & DSH Hybrid Integration
+- `avo_supervisor` acts as macro state optimizer; `dsh` acts as micro tool execution engine.
+- Run `python hybrid_engine.py "<task>"` for full hybrid orchestration.
 """
 
-GEMINI_MD_TEMPLATE = """# Antigravity AVO Protocol (Always Active)
+GEMINI_MD_TEMPLATE = """# Antigravity AVO + DSH Hybrid Protocol (Always Active)
 
-## System Directive: Autonomous Validation & Memory
-For every task in this project, Antigravity MUST operate under the AVO Protocol:
+## System Directive: Autonomous Validation & Hybrid Memory
+For every task in this project, Antigravity MUST operate under the AVO + DSH Hybrid Protocol:
 
-1. **Check Memory**: Read `.agent_memory.json` or run `python .avo/avo.py summary` (or `python avo.py summary`) to load past attempts and known dead ends before modifying files.
-2. **Ground Changes**: Execute real terminal commands (tests, builds, lints) to verify changes.
+1. **Check Memory**: Read `.agent_memory.json` or run `python .avo/avo.py summary` to load past attempts and known dead ends before modifying files.
+2. **Ground Changes**: Execute real terminal / `dsh` commands to verify changes.
 3. **Log Outcomes**: Use `python .avo/avo.py log` for key attempts and `python .avo/avo.py fact` to persist verified truths.
 4. **Halt Loops**: If an error repeats, execute `python .avo/avo.py check`. When stagnation is detected, immediately pivot to a fundamentally different implementation approach or invoke `avo_supervisor`.
 """
 
-CLAUDE_MD_TEMPLATE = """# Claude Code AVO Mode Instructions
+CLAUDE_MD_TEMPLATE = """# Claude Code AVO + DSH Mode Instructions
 
-This project uses the AVO (Autonomous Validation Orchestrator) protocol.
+This project uses the AVO + DSH (DeepSeek Harness) Hybrid protocol.
 
 1. **Memory Inspection**: Always inspect `.agent_memory.json` (or run `python avo.py summary`) before writing code.
-2. **Execution Grounding**: Never claim code is complete without showing passing terminal execution output.
+2. **Execution Grounding**: Never claim code is complete without showing passing terminal/dsh execution output.
 3. **Logging**: Record outcomes using `python avo.py log --task "<task>" --action "<action>" --output "<output>" --status <success|fail>`.
 4. **Stagnation Prevention**: Run `python avo.py check`. If stagnation is flagged (3x identical failures), halt and change strategy completely.
 """
@@ -147,7 +139,7 @@ def load():
                 return json.load(f)
         except Exception:
             pass
-    return {"attempts": [], "failed_patterns": [], "facts": [], "forced_continuations": 0}
+    return {"attempts": [], "failed_patterns": [], "facts": [], "sessions": [], "stagnation_count": 0, "failed_approaches": [], "forced_continuations": 0}
 
 
 def save(mem):
@@ -213,8 +205,8 @@ def cmd_check(a):
 
 def cmd_summary(a):
     mem = load()
-    print(f"=== AVO Memory Summary ===")
-    print(f"attempts={len(mem.get('attempts', []))} | failed_patterns={len(mem.get('failed_patterns', []))} | facts={len(mem.get('facts', []))}\n")
+    print(f"=== AVO + DSH Memory Summary ===")
+    print(f"attempts={len(mem.get('attempts', []))} | failed_patterns={len(mem.get('failed_patterns', []))} | facts={len(mem.get('facts', []))} | sessions={len(mem.get('sessions', []))}\n")
     if mem.get("attempts"):
         print("Recent Attempts:")
         for x in mem["attempts"][-5:]:
@@ -248,8 +240,31 @@ def cmd_status(a):
         "failures": fails,
         "failed_patterns": len(mem.get("failed_patterns", [])),
         "facts": len(mem.get("facts", [])),
+        "sessions": len(mem.get("sessions", [])),
         "stagnant": _stagnant(mem),
     }, indent=2))
+
+
+def cmd_hybrid(a):
+    """Execute task using HybridAVODSHEngine."""
+    try:
+        from hybrid_engine import HybridAVODSHEngine
+    except ImportError:
+        engine_file = os.path.join(os.path.dirname(__file__), "hybrid_engine.py")
+        if os.path.exists(engine_file):
+            import importlib.util
+            spec = importlib.util.spec_from_file_location("hybrid_engine", engine_file)
+            hybrid_module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(hybrid_module)
+            HybridAVODSHEngine = hybrid_module.HybridAVODSHEngine
+        else:
+            print("ERROR: hybrid_engine.py not found.")
+            sys.exit(1)
+
+    engine = HybridAVODSHEngine(os.getcwd())
+    mode = getattr(a, "mode", "standard")
+    success, output = engine.execute_dsh_step(a.prompt, mode=mode)
+    sys.exit(0 if success else 1)
 
 
 def cmd_hook_post(a):
@@ -329,7 +344,7 @@ def cmd_install(a):
     mem_path = os.path.join(dest_dir, MEM_FILE)
     if not os.path.exists(mem_path):
         with open(mem_path, "w", encoding="utf-8") as f:
-            json.dump({"attempts": [], "failed_patterns": [], "facts": [], "forced_continuations": 0}, f, indent=2)
+            json.dump({"attempts": [], "failed_patterns": [], "facts": [], "sessions": [], "stagnation_count": 0, "failed_approaches": [], "forced_continuations": 0}, f, indent=2)
         print(f"  + Created {MEM_FILE}")
 
     # 2. AGENTS.md
@@ -381,30 +396,35 @@ def cmd_install(a):
             f.write(AGENTS_MD_TEMPLATE)
         print(f"  + Configured .agentrules")
 
-    # 5. Copy engine executables
+    # 5. Copy engine executables (avo.py and hybrid_engine.py)
     src_avo = os.path.abspath(__file__)
-    
-    # Copy to .avo/avo.py
+    src_hybrid = os.path.join(os.path.dirname(src_avo), "hybrid_engine.py")
+
     avo_dir = os.path.join(dest_dir, ".avo")
     os.makedirs(avo_dir, exist_ok=True)
-    dest_dot_avo = os.path.join(avo_dir, "avo.py")
-    try:
-        if os.path.normcase(os.path.abspath(dest_dot_avo)) != os.path.normcase(src_avo):
-            shutil.copy2(src_avo, dest_dot_avo)
-            print(f"  + Installed .avo/avo.py")
-    except Exception:
-        pass
-
-    # Copy to avo.py
-    dest_avo = os.path.join(dest_dir, "avo.py")
-    try:
-        if os.path.exists(dest_avo) and os.path.samefile(src_avo, dest_avo):
+    
+    # Copy avo.py
+    for dest_file in [os.path.join(avo_dir, "avo.py"), os.path.join(dest_dir, "avo.py")]:
+        try:
+            if os.path.exists(dest_file) and os.path.samefile(src_avo, dest_file):
+                pass
+            elif os.path.normcase(os.path.abspath(dest_file)) != os.path.normcase(src_avo):
+                shutil.copy2(src_avo, dest_file)
+                print(f"  + Installed {os.path.basename(dest_file)}")
+        except Exception:
             pass
-        elif os.path.normcase(os.path.abspath(dest_avo)) != os.path.normcase(src_avo):
-            shutil.copy2(src_avo, dest_avo)
-            print(f"  + Installed avo.py")
-    except Exception:
-        pass
+
+    # Copy hybrid_engine.py
+    if os.path.exists(src_hybrid):
+        for dest_file in [os.path.join(avo_dir, "hybrid_engine.py"), os.path.join(dest_dir, "hybrid_engine.py")]:
+            try:
+                if os.path.exists(dest_file) and os.path.samefile(src_hybrid, dest_file):
+                    pass
+                elif os.path.normcase(os.path.abspath(dest_file)) != os.path.normcase(os.path.abspath(src_hybrid)):
+                    shutil.copy2(src_hybrid, dest_file)
+                    print(f"  + Installed {os.path.basename(dest_file)}")
+            except Exception:
+                pass
 
     if global_rules:
         home_rules = os.path.expanduser("~/.gemini/config/rules")
@@ -414,11 +434,11 @@ def cmd_install(a):
             f.write(AGENTS_MD_TEMPLATE)
         print(f"  + Wrote global rules: {global_rule_path}")
 
-    print("[AVO Installer] Complete! NVIDIA AVO Plugin active for this project.")
+    print("[AVO Installer] Complete! NVIDIA AVO + DSH Hybrid Plugin active for this project.")
 
 
 def cmd_doctor(a):
-    print("=== NVIDIA AVO Diagnostic Check ===")
+    print("=== NVIDIA AVO + DSH Hybrid Diagnostic Check ===")
     print(f"Engine Version  : {VERSION}")
     print(f"Python Runtime  : {sys.version.split()[0]}")
     print(f"Working Directory: {os.getcwd()}")
@@ -429,15 +449,18 @@ def cmd_doctor(a):
         print(f"  - Total Attempts: {len(mem.get('attempts', []))}")
         print(f"  - Dead Ends     : {len(mem.get('failed_patterns', []))}")
         print(f"  - Facts Stored  : {len(mem.get('facts', []))}")
+        print(f"  - DSH Sessions  : {len(mem.get('sessions', []))}")
         print(f"  - Stagnant State: {_stagnant(mem)}")
     agents_exists = os.path.exists("AGENTS.md")
     gemini_exists = os.path.exists("GEMINI.md")
     claude_exists = os.path.exists("CLAUDE.md")
     dot_avo_exists = os.path.exists(os.path.join(".avo", "avo.py")) or os.path.exists("avo.py")
+    has_dsh = shutil.which("dsh") is not None
     print(f"AGENTS.md       : {'Found' if agents_exists else 'Missing'}")
     print(f"GEMINI.md       : {'Found' if gemini_exists else 'Missing'}")
     print(f"CLAUDE.md       : {'Found' if claude_exists else 'Missing'}")
     print(f"AVO Engine      : {'Found' if dot_avo_exists else 'Missing'}")
+    print(f"DSH CLI Runner  : {'Detected' if has_dsh else 'Not in PATH (Native subprocess fallback active)'}")
     
     # Global check
     g_worker = os.path.expanduser("~/.gemini/config/agents/avo_worker/agent.md")
@@ -446,11 +469,11 @@ def cmd_doctor(a):
     print(f"Global Worker   : {'Found' if os.path.exists(g_worker) else 'Not installed (run with --global)'}")
     print(f"Global Super    : {'Found' if os.path.exists(g_super) else 'Not installed (run with --global)'}")
     print(f"Global Rules    : {'Found' if os.path.exists(g_rules) else 'Not installed (run with --global-rules)'}")
-    print("====================================")
+    print("=================================================")
 
 
 def main():
-    p = argparse.ArgumentParser(prog="avo", description="NVIDIA AVO (Autonomous Validation Orchestrator) Engine & Plugin")
+    p = argparse.ArgumentParser(prog="avo", description="NVIDIA AVO + DSH Hybrid Execution Engine & Plugin")
     sub = p.add_subparsers(dest="cmd", required=True)
 
     sub.add_parser("init", help="Initialize memory file")
@@ -470,6 +493,11 @@ def main():
     fa.add_argument("text")
 
     sub.add_parser("status", help="Print JSON status of AVO engine")
+    
+    hy = sub.add_parser("hybrid", help="Run task using AVO + DSH Hybrid Engine")
+    hy.add_argument("prompt", help="Task prompt to execute")
+    hy.add_argument("--mode", choices=["standard", "fast", "strict"], default="standard")
+
     sub.add_parser("hook-post", help="Post-tool execution hook handler")
     sub.add_parser("hook-stop", help="Stop hook handler")
 
@@ -489,6 +517,7 @@ def main():
         "summary": cmd_summary,
         "fact": cmd_fact,
         "status": cmd_status,
+        "hybrid": cmd_hybrid,
         "hook-post": cmd_hook_post,
         "hook-stop": cmd_hook_stop,
         "install": cmd_install,
