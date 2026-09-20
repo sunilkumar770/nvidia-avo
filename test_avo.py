@@ -122,6 +122,19 @@ class TestNVIDIAAVODSHHybrid(unittest.TestCase):
         stagnant = engine.avo_supervisor_check()
         self.assertTrue(stagnant)
 
+    def test_10_fused_audit_engine(self):
+        """Test Fused AVO + DSH + Cloudflare Security Audit engine & cleanup hook."""
+        fusion_script = str(Path(__file__).parent / "fusion" / "fusion_orchestrator.py")
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("fusion_orchestrator", fusion_script)
+        f_module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(f_module)
+
+        engine = f_module.FusedAVODSHAuditEngine(sandbox_dir=str(self.test_dir / "sb"), auto_cleanup=True)
+        ledger = engine.run_fused_audit(target_path=str(self.test_dir))
+        self.assertIn("coverage_percentage", ledger)
+        self.assertFalse(os.path.exists(str(self.test_dir / "sb" / "dummy.txt")))
+
 
 if __name__ == "__main__":
     unittest.main()

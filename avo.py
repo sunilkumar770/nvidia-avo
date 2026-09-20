@@ -472,6 +472,25 @@ def cmd_doctor(a):
     print("=================================================")
 
 
+def cmd_fuse_audit(a):
+    """Execute Fused AVO + DSH + Cloudflare Security Audit."""
+    fusion_file = os.path.join(os.path.dirname(__file__), "fusion", "fusion_orchestrator.py")
+    if not os.path.exists(fusion_file):
+        fusion_file = os.path.join(os.path.dirname(__file__), "fusion_orchestrator.py")
+    
+    if os.path.exists(fusion_file):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("fusion_orchestrator", fusion_file)
+        f_module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(f_module)
+        engine = f_module.FusedAVODSHAuditEngine(auto_cleanup=not getattr(a, "no_cleanup", False))
+        ledger = engine.run_fused_audit(target_path=getattr(a, "target_path", "."))
+        sys.exit(0 if ledger.get("issues_count", 0) == 0 else 1)
+    else:
+        print("ERROR: fusion_orchestrator.py not found.")
+        sys.exit(1)
+
+
 def main():
     p = argparse.ArgumentParser(prog="avo", description="NVIDIA AVO + DSH Hybrid Execution Engine & Plugin")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -498,6 +517,10 @@ def main():
     hy.add_argument("prompt", help="Task prompt to execute")
     hy.add_argument("--mode", choices=["standard", "fast", "strict"], default="standard")
 
+    faud = sub.add_parser("fuse-audit", help="Run Fused AVO + DSH + Cloudflare Security Audit")
+    faud.add_argument("--target-path", default=".", help="Directory to audit")
+    faud.add_argument("--no-cleanup", action="store_true", help="Preserve sandbox artifacts post-run")
+
     sub.add_parser("hook-post", help="Post-tool execution hook handler")
     sub.add_parser("hook-stop", help="Stop hook handler")
 
@@ -518,6 +541,7 @@ def main():
         "fact": cmd_fact,
         "status": cmd_status,
         "hybrid": cmd_hybrid,
+        "fuse-audit": cmd_fuse_audit,
         "hook-post": cmd_hook_post,
         "hook-stop": cmd_hook_stop,
         "install": cmd_install,
