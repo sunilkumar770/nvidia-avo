@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "cloudflare-dsh-fusion": {
+      "command": "npx",
+      "args": ["-y", "@zseven-w/dsh-crew", "serve"],
+      "env": {
+        "DEEPSEEK_API_KEY": "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",
+        "NVIDIA_API_KEY": "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",
+        "DSH_SANDBOX_RUNTIME": "bwrap",
+        "DSH_WORKSPACE_DIR": "C:/Users/sunil/antigravity-dsh-audit/sandbox_root"
+      }
+    }
+  }
+}
