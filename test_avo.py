@@ -7,9 +7,10 @@ from pathlib import Path
 
 PYTHON_EXE = sys.executable
 AVO_SCRIPT = str(Path(__file__).parent / "avo.py")
+HYBRID_SCRIPT = str(Path(__file__).parent / "hybrid_engine.py")
 
 
-class TestNVIDIAAVO(unittest.TestCase):
+class TestNVIDIAAVODSHHybrid(unittest.TestCase):
     def setUp(self):
         self.test_dir = Path(__file__).parent / "_test_avo_tmp"
         self.test_dir.mkdir(exist_ok=True)
@@ -86,6 +87,40 @@ class TestNVIDIAAVO(unittest.TestCase):
         status_data = json.loads(r.stdout)
         self.assertTrue(status_data["version"].startswith("1."))
         self.assertFalse(status_data["stagnant"])
+
+    def test_08_hybrid_engine_execution(self):
+        """Test AVO + DSH Hybrid Pipeline Engine execution step."""
+        r = self.run_avo("hybrid", "echo Testing Hybrid AVO+DSH Pipeline")
+        self.assertEqual(r.returncode, 0)
+        self.assertIn("SUCCESS", r.stdout)
+
+        with open(".agent_memory.json", "r", encoding="utf-8") as f:
+            data = json.load(f)
+        self.assertGreaterEqual(len(data.get("sessions", [])), 1)
+
+    def test_09_hybrid_stagnation_intervention(self):
+        """Test AVO Supervisor intervention in Hybrid DSH sessions upon stagnation."""
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("hybrid_engine", HYBRID_SCRIPT)
+        hybrid_module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(hybrid_module)
+
+        engine = hybrid_module.HybridAVODSHEngine(str(self.test_dir))
+        
+        # Simulate 3 identical failure sessions
+        for i in range(3):
+            engine.memory.setdefault("sessions", []).append({
+                "timestamp": "2026-09-20T00:00:00Z",
+                "prompt": "Failing task prompt",
+                "mode": "standard",
+                "output": "Error: ConnectionRefused 8080",
+                "success": False
+            })
+        engine._save_memory()
+
+        # Next step should trigger AVO Supervisor Intervention
+        stagnant = engine.avo_supervisor_check()
+        self.assertTrue(stagnant)
 
 
 if __name__ == "__main__":
